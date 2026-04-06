@@ -71,6 +71,7 @@
               cargo
               clippy
               bubblewrap
+              self.packages.${system}.nyaibokkusu
             ];
           };
       });

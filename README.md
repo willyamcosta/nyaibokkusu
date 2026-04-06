@@ -59,10 +59,12 @@ MY_VAR = "value"
 always included:
 
 - core mounts (read-only): `/nix/store`, `/run/current-system`, `/etc/profiles`, `/etc/static`, `/etc/resolv.conf`, `/etc/hosts`, `/etc/ssl`, `/etc/nix`, `/etc/passwd`, `/etc/group`, `/etc/nsswitch.conf`, `~/.nix-profile`, `~/.local/state/nix`
+- `/nix/var/nix/daemon-socket` (read-write, if present) — lets nix commands talk to the daemon
+- `/nix/var/nix/profiles` (read-only, if present)
+- `NIX_REMOTE=daemon` is set when the daemon socket exists so nix uses the daemon instead of a chroot store
 - `/tmp` as tmpfs
 - `$HOME` as tmpfs
 - project directory as read-write bind mount (and set as working dir)
-- nix profile mounts if present: (read-only)
 
 default config mounts (only if they exist):
 
@@ -70,8 +72,31 @@ default config mounts (only if they exist):
 - `~/.aider`, `~/.aider.conf.yml`
 - `~/.codex`
 - `~/.config/opencode`
+- `~/.config/nix/nix.conf`
 
 everything else is not mounted unless you map it (for example `~/.ssh`, `~/.gnupg`, `~/.config`).
+
+## common recipes
+
+**mount your whole `~/.config` (with optional exclusions)**
+
+```toml
+exclude_mounts = ["~/.config/secret-app"]
+
+[[mounts]]
+path = "~/.config"
+```
+
+**mount specific dirs, e.g., git identity/config**
+
+```toml
+# ~/.config/nyaibokkusu.toml
+[[mounts]]
+path = "~/.gitconfig"
+
+[[mounts]]
+path = "~/.config/git"
+```
 
 ## credits
 

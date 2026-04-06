@@ -65,7 +65,8 @@ pub fn build_args(config: &Config, home: &str, project_dir: &str) -> Vec<String>
     // Environment
     push(&mut args, &["--clearenv"]);
     let path_val = format!(
-        "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:{home}/.nix-profile/bin"
+        "/run/current-system/sw/bin:/nix/var/nix/profiles/default/bin:/etc/profiles/per-user/{user}/bin:{home}/.nix-profile/bin",
+        user = std::env::var("USER").unwrap_or_else(|_| "nobody".into())
     );
     push(&mut args, &["--setenv", "PATH", &path_val]);
     push(&mut args, &["--setenv", "HOME", home]);
@@ -157,6 +158,20 @@ pub fn build_args(config: &Config, home: &str, project_dir: &str) -> Vec<String>
             push(&mut args, &["--setenv", "WAYLAND_DISPLAY", &wayland]);
             push(&mut args, &["--setenv", "XDG_RUNTIME_DIR", &xdg]);
         }
+    }
+
+    // Nix daemon
+    let daemon_sock = "/nix/var/nix/daemon-socket";
+    let has_daemon = Path::new(daemon_sock).exists();
+    if has_daemon {
+        push(&mut args, &["--bind", daemon_sock, daemon_sock]);
+    }
+    let nix_profiles = "/nix/var/nix/profiles";
+    if Path::new(nix_profiles).is_dir() {
+        push(&mut args, &["--ro-bind", nix_profiles, nix_profiles]);
+    }
+    if has_daemon {
+        push(&mut args, &["--setenv", "NIX_REMOTE", "daemon"]);
     }
 
     // Docker
@@ -260,6 +275,34 @@ mod tests {
             .windows(3)
             .position(|w| w[0] == "--setenv" && w[1] == "FOO" && w[2] == "bar");
         assert!(idx.is_some());
+    }
+
+    #[test]
+    fn path_includes_user_profile_bin() {
+        let original = std::env::var("USER").ok();
+        std::env::set_var("USER", "alice");
+        let args = build_args(&empty_config(), "/home/test", "/tmp/project");
+        let idx = args.windows(3).position(|w| {
+            w[0] == "--setenv"
+                && w[1] == "PATH"
+                && w[2].contains("/etc/profiles/per-user/alice/bin")
+        });
+        assert!(idx.is_some());
+        match original {
+            Some(value) => std::env::set_var("USER", value),
+            None => std::env::remove_var("USER"),
+        }
+    }
+
+    #[test]
+    fn nix_remote_set_when_daemon_available() {
+        let args = build_args(&empty_config(), "/home/test", "/tmp/project");
+        if Path::new("/nix/var/nix/daemon-socket").exists() {
+            let idx = args
+                .windows(3)
+                .position(|w| w[0] == "--setenv" && w[1] == "NIX_REMOTE" && w[2] == "daemon");
+            assert!(idx.is_some());
+        }
     }
 
     #[test]

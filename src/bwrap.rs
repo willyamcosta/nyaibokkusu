@@ -72,10 +72,10 @@ pub fn build_args(config: &Config, home: &str, project_dir: &str) -> Vec<String>
     push(&mut args, &["--setenv", "HOME", home]);
     setenv_from(&mut args, "TERM", "xterm-256color");
     setenv_from(&mut args, "LANG", "en_US.UTF-8");
-    setenv_or(&mut args, "USER", "nobody");
+    setenv_from(&mut args, "USER", "nobody");
     setenv_from(&mut args, "SHELL", "/bin/bash");
-    setenv_or(&mut args, "NIX_PATH", "");
-    setenv_or(&mut args, "NIX_PROFILES", "/run/current-system/sw");
+    setenv_from(&mut args, "NIX_PATH", "");
+    setenv_from(&mut args, "NIX_PROFILES", "/run/current-system/sw");
     setenv_from(
         &mut args,
         "LOCALE_ARCHIVE",
@@ -92,14 +92,15 @@ pub fn build_args(config: &Config, home: &str, project_dir: &str) -> Vec<String>
     // Config mounts (filtered to existing paths)
     for m in &config.mounts {
         let src = &m.path;
+        let dst = m.dest.as_deref().unwrap_or(src);
         let exists = Path::new(src).exists() || std::fs::symlink_metadata(src).is_ok();
         if !exists {
             continue;
         }
         if m.rw {
-            push(&mut args, &["--bind", src, src]);
+            push(&mut args, &["--bind", src, dst]);
         } else {
-            push(&mut args, &["--ro-bind", src, src]);
+            push(&mut args, &["--ro-bind", src, dst]);
         }
     }
 
@@ -192,11 +193,6 @@ fn push(args: &mut Vec<String>, items: &[&str]) {
 }
 
 fn setenv_from(args: &mut Vec<String>, var: &str, default: &str) {
-    let val = std::env::var(var).unwrap_or_else(|_| default.to_string());
-    push(args, &["--setenv", var, &val]);
-}
-
-fn setenv_or(args: &mut Vec<String>, var: &str, default: &str) {
     let val = std::env::var(var).unwrap_or_else(|_| default.to_string());
     push(args, &["--setenv", var, &val]);
 }
@@ -310,6 +306,7 @@ mod tests {
         let config = Config {
             mounts: vec![Mount {
                 path: "/nonexistent/path/that/does/not/exist".into(),
+                dest: None,
                 rw: false,
             }],
             ..Config::default()
@@ -324,6 +321,7 @@ mod tests {
         let config = Config {
             mounts: vec![Mount {
                 path: "/etc/hosts".into(),
+                dest: None,
                 rw: false,
             }],
             ..Config::default()
@@ -336,5 +334,22 @@ mod tests {
             .count();
         // At least 2: one from base mounts, one from config mounts
         assert!(count >= 2);
+    }
+
+    #[test]
+    fn mount_with_dest_uses_different_destination() {
+        let config = Config {
+            mounts: vec![Mount {
+                path: "/etc/hosts".into(),
+                dest: Some("/tmp/myhosts".into()),
+                rw: true,
+            }],
+            ..Config::default()
+        };
+        let args = build_args(&config, "/home/test", "/tmp/project");
+        let idx = args
+            .windows(3)
+            .position(|w| w[0] == "--bind" && w[1] == "/etc/hosts" && w[2] == "/tmp/myhosts");
+        assert!(idx.is_some());
     }
 }

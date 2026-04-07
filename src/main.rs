@@ -19,12 +19,12 @@ fn main() {
         use lexopt::Arg::*;
         match arg {
             Long("map") => {
-                let path = value_string(&mut parser, "--map");
-                cli.mounts.push(config::Mount { path, rw: false });
+                let arg = value_string(&mut parser, "--map");
+                cli.mounts.push(parse_mount_arg(&arg, false));
             }
             Long("rw-map") => {
-                let path = value_string(&mut parser, "--rw-map");
-                cli.mounts.push(config::Mount { path, rw: true });
+                let arg = value_string(&mut parser, "--rw-map");
+                cli.mounts.push(parse_mount_arg(&arg, true));
             }
             Long("gpu") => cli.gpu = true,
             Long("display") => cli.display = true,
@@ -114,8 +114,8 @@ Usage: nyaibokkusu [OPTIONS] [-- COMMAND [ARGS...]]
 Whitelist-based bubblewrap sandbox for AI agents on NixOS.
 
 Options:
-  --map <path>      Add read-only bind mount
-  --rw-map <path>   Add read-write bind mount
+  --map <src>[:<dst>]      Add read-only bind mount
+  --rw-map <src>[:<dst>]   Add read-write bind mount
   --gpu             Bind GPU devices (DRI, NVIDIA, OpenGL)
   --display         Bind X11/Wayland sockets
   --docker          Bind Docker socket
@@ -154,4 +154,19 @@ fn raw_args_or_exit(parser: &mut lexopt::Parser) -> Vec<OsString> {
             std::process::exit(1);
         })
         .collect()
+}
+
+fn parse_mount_arg(arg: &str, rw: bool) -> config::Mount {
+    match arg.split_once(':') {
+        Some((src, dst)) => config::Mount {
+            path: src.to_string(),
+            dest: Some(dst.to_string()),
+            rw,
+        },
+        None => config::Mount {
+            path: arg.to_string(),
+            dest: None,
+            rw,
+        },
+    }
 }

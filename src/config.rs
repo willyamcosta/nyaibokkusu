@@ -8,6 +8,8 @@ pub const TOOL_NAME: &str = "nyaibokkusu";
 pub struct Mount {
     pub path: String,
     #[serde(default)]
+    pub dest: Option<String>,
+    #[serde(default)]
     pub rw: bool,
 }
 
@@ -35,26 +37,32 @@ impl Config {
             mounts: vec![
                 Mount {
                     path: "~/.claude".into(),
+                    dest: None,
                     rw: true,
                 },
                 Mount {
                     path: "~/.claude.json".into(),
+                    dest: None,
                     rw: true,
                 },
                 Mount {
                     path: "~/.aider".into(),
+                    dest: None,
                     rw: true,
                 },
                 Mount {
                     path: "~/.aider.conf.yml".into(),
+                    dest: None,
                     rw: true,
                 },
                 Mount {
                     path: "~/.codex".into(),
+                    dest: None,
                     rw: true,
                 },
                 Mount {
                     path: "~/.config/opencode".into(),
+                    dest: None,
                     rw: true,
                 },
             ],
@@ -125,6 +133,11 @@ impl Config {
             if m.path.starts_with("~/") {
                 m.path = format!("{}{}", home, &m.path[1..]);
             }
+            if let Some(ref mut dest) = m.dest {
+                if dest.starts_with("~/") {
+                    *dest = format!("{}{}", home, &dest[1..]);
+                }
+            }
         }
         for p in &mut self.exclude_mounts {
             if p.starts_with("~/") {
@@ -146,6 +159,7 @@ mod tests {
     fn mount(path: &str, rw: bool) -> Mount {
         Mount {
             path: path.into(),
+            dest: None,
             rw,
         }
     }
@@ -291,5 +305,35 @@ MY_VAR = "value"
         assert_eq!(config.mounts[0].path, "~/.extra");
         assert!(!config.mounts[0].rw);
         assert_eq!(config.env.get("MY_VAR").unwrap(), "value");
+    }
+
+    #[test]
+    fn expand_tilde_replaces_dest() {
+        let mut c = Config {
+            mounts: vec![Mount {
+                path: "/etc/hosts".into(),
+                dest: Some("~/.config/hosts".into()),
+                rw: false,
+            }],
+            ..Config::default()
+        };
+        c.expand_tilde("/home/user");
+        assert_eq!(c.mounts[0].path, "/etc/hosts");
+        assert_eq!(c.mounts[0].dest, Some("/home/user/.config/hosts".into()));
+    }
+
+    #[test]
+    fn parse_toml_with_dest() {
+        let toml_str = r#"
+[[mounts]]
+path = "/custom/src"
+dest = "~/.config/opencode"
+rw = true
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.mounts.len(), 1);
+        assert_eq!(config.mounts[0].path, "/custom/src");
+        assert_eq!(config.mounts[0].dest, Some("~/.config/opencode".into()));
+        assert!(config.mounts[0].rw);
     }
 }

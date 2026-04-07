@@ -39,6 +39,21 @@ config files are merged in this order:
 1. project: `./.nyaibokkusu.toml`
 1. CLI flags
 
+environment variables in paths are expanded:
+
+- `$VAR` - replaced with the value of VAR (empty string if unset)
+- `${VAR}` - same as `$VAR`
+- `${VAR:-default}` - replaced with VAR value, or `default` if unset
+- `~` - replaced with $HOME (only at path start or in defaults)
+- multiple variables are expanded: `$A/$B` → `/path_a/path_b`
+- recursive expansion is NOT supported: `${${VAR}}` literal
+
+### security note
+
+paths in config files are expanded using environment variables from the host
+system. do not use `.nyaibokkusu.toml` files from untrusted sources, as they
+could expose sensitive environment variables through paths.
+
 example:
 
 ```toml
@@ -71,12 +86,26 @@ default config mounts (only if they exist):
 - `~/.claude`, `~/.claude.json`
 - `~/.aider`, `~/.aider.conf.yml`
 - `~/.codex`
-- `~/.config/opencode`
-- `~/.config/nix/nix.conf`
+- opencode: `$XDG_CONFIG_HOME/opencode`, `$XDG_CACHE_HOME/opencode`, `$XDG_DATA_HOME/opencode`, `$XDG_STATE_HOME/opencode` (defaults follow XDG spec)
 
 everything else is not mounted unless you map it (for example `~/.ssh`, `~/.gnupg`, `~/.config`).
 
 ## common recipes
+
+**opencode with permissive config**
+
+```nix
+let
+  permissive-config = pkgs.writeText "opencode.json" ''
+    { "$schema": "https://opencode.ai/config.json", "permission": { "*": "allow" } }
+  '';
+in
+pkgs.writeShellScriptBin "nyai-opencode" ''
+  exec ${nyaibokkusu}/bin/nyaibokkusu \
+    --map ${permissive-config}:~/.config/opencode/opencode.json \
+    -- opencode "$@"
+''
+```
 
 **mount your whole `~/.config` (with optional exclusions)**
 

@@ -61,7 +61,22 @@ impl Config {
                     rw: true,
                 },
                 Mount {
-                    path: "~/.config/opencode".into(),
+                    path: "${XDG_CONFIG_HOME:-~/.config}/opencode".into(),
+                    dest: None,
+                    rw: true,
+                },
+                Mount {
+                    path: "${XDG_CACHE_HOME:-~/.cache}/opencode".into(),
+                    dest: None,
+                    rw: true,
+                },
+                Mount {
+                    path: "${XDG_DATA_HOME:-~/.local/share}/opencode".into(),
+                    dest: None,
+                    rw: true,
+                },
+                Mount {
+                    path: "${XDG_STATE_HOME:-~/.local/state}/opencode".into(),
                     dest: None,
                     rw: true,
                 },
@@ -130,21 +145,93 @@ impl Config {
 
     pub fn expand_tilde(&mut self, home: &str) {
         for m in &mut self.mounts {
-            if m.path.starts_with("~/") {
-                m.path = format!("{}{}", home, &m.path[1..]);
-            }
+            m.path = expand_env_vars(&m.path, home);
             if let Some(ref mut dest) = m.dest {
-                if dest.starts_with("~/") {
-                    *dest = format!("{}{}", home, &dest[1..]);
-                }
+                *dest = expand_env_vars(dest, home);
             }
         }
         for p in &mut self.exclude_mounts {
-            if p.starts_with("~/") {
-                *p = format!("{}{}", home, &p[1..]);
-            }
+            *p = expand_env_vars(p, home);
+        }
+        for v in self.env.values_mut() {
+            *v = expand_env_vars(v, home);
         }
     }
+}
+
+fn expand_env_vars(s: &str, home: &str) -> String {
+    let s = if s.starts_with("~/") {
+        format!("{}{}", home, &s[1..])
+    } else {
+        s.to_string()
+    };
+
+    let mut output = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] != b'$' || i + 1 >= bytes.len() {
+            output.push(bytes[i] as char);
+            i += 1;
+            continue;
+        }
+
+        if bytes[i + 1] == b'{' {
+            i += 2;
+            let start = i;
+            while i < bytes.len() && bytes[i] != b'}' {
+                i += 1;
+            }
+            if i >= bytes.len() {
+                output.push_str("${");
+                i = start;
+                continue;
+            }
+            output.push_str(&expand_braced_var(&s[start..i], home));
+            i += 1;
+        } else if bytes[i + 1].is_ascii_alphanumeric() || bytes[i + 1] == b'_' {
+            i += 1;
+            let start = i;
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+            output.push_str(&std::env::var(&s[start..i]).unwrap_or_default());
+        } else {
+            output.push('$');
+            i += 1;
+        }
+    }
+    output
+}
+
+fn expand_braced_var(var_part: &str, home: &str) -> String {
+    if var_part.is_empty() {
+        return "${}".into();
+    }
+
+    let Some(colon) = var_part.find(":-") else {
+        return if var_part.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            std::env::var(var_part).unwrap_or_default()
+        } else {
+            format!("${{{}}}", var_part)
+        };
+    };
+
+    let (var_name, default) = var_part.split_at(colon);
+    let default = &default[2..];
+
+    if var_name.is_empty() || !var_name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return format!("${{{}}}", var_part);
+    }
+
+    std::env::var(var_name).unwrap_or_else(|_| {
+        if default.starts_with("~/") {
+            format!("{}{}", home, &default[1..])
+        } else {
+            default.into()
+        }
+    })
 }
 
 fn global_config_path(home: &str) -> PathBuf {
@@ -335,5 +422,173 @@ rw = true
         assert_eq!(config.mounts[0].path, "/custom/src");
         assert_eq!(config.mounts[0].dest, Some("~/.config/opencode".into()));
         assert!(config.mounts[0].rw);
+    }
+
+    #[test]
+    fn expand_env_var_simple() {
+        std::env::set_var("TEST_VAR", "/test/path");
+        let mut c = Config {
+            mounts: vec![mount("$TEST_VAR/something", true)],
+            ..Config::default()
+        };
+        c.expand_tilde("/home/user");
+        assert_eq!(c.mounts[0].path, "/test/path/something");
+        std::env::remove_var("TEST_VAR");
+    }
+
+    #[test]
+    fn expand_env_var_braced() {
+        std::env::set_var("MY_VAR", "/my/path");
+        let mut c = Config {
+            mounts: vec![mount("${MY_VAR}/sub", true)],
+            ..Config::default()
+        };
+        c.expand_tilde("/home/user");
+        assert_eq!(c.mounts[0].path, "/my/path/sub");
+        std::env::remove_var("MY_VAR");
+    }
+
+    #[test]
+    fn expand_env_var_with_default() {
+        std::env::remove_var("UNSET_VAR");
+        let mut c = Config {
+            mounts: vec![mount("${UNSET_VAR:-/default}/path", true)],
+            ..Config::default()
+        };
+        c.expand_tilde("/home/user");
+        assert_eq!(c.mounts[0].path, "/default/path");
+    }
+
+    #[test]
+    fn expand_env_var_with_tilde_default() {
+        std::env::remove_var("UNSET_XDG");
+        let mut c = Config {
+            mounts: vec![mount("${UNSET_XDG:-~/.config}/app", true)],
+            ..Config::default()
+        };
+        c.expand_tilde("/home/user");
+        assert_eq!(c.mounts[0].path, "/home/user/.config/app");
+    }
+
+    #[test]
+    fn expand_env_var_overrides_default() {
+        std::env::set_var("SET_VAR", "/overridden");
+        let mut c = Config {
+            mounts: vec![mount("${SET_VAR:-/default}/path", true)],
+            ..Config::default()
+        };
+        c.expand_tilde("/home/user");
+        assert_eq!(c.mounts[0].path, "/overridden/path");
+        std::env::remove_var("SET_VAR");
+    }
+
+    #[test]
+    fn expand_multiple_env_vars() {
+        std::env::set_var("TEST_A", "/path_a");
+        std::env::set_var("TEST_B", "path_b");
+        let mut c = Config {
+            mounts: vec![mount("$TEST_A/$TEST_B/file", true)],
+            ..Config::default()
+        };
+        c.expand_tilde("/home/user");
+        assert_eq!(c.mounts[0].path, "/path_a/path_b/file");
+        std::env::remove_var("TEST_A");
+        std::env::remove_var("TEST_B");
+    }
+
+    #[test]
+    fn expand_env_var_empty_value() {
+        std::env::set_var("EMPTY_VAR_001", "");
+        let mut c = Config {
+            mounts: vec![mount("${EMPTY_VAR_001}/path", true)],
+            ..Config::default()
+        };
+        c.expand_tilde("/home/user");
+        assert_eq!(c.mounts[0].path, "/path");
+        std::env::remove_var("EMPTY_VAR_001");
+    }
+
+    #[test]
+    fn expand_tilde_only_at_start() {
+        let mut c = Config {
+            mounts: vec![mount("/path/~/file", true)],
+            ..Config::default()
+        };
+        c.expand_tilde("/home/user");
+        // ~ in middle of path should NOT be expanded
+        assert_eq!(c.mounts[0].path, "/path/~/file");
+    }
+
+    #[test]
+    fn expand_exclude_mounts_env_vars() {
+        std::env::set_var("EXCL_VAR_001", "/tmp/exclude");
+        let mut c = Config {
+            exclude_mounts: vec!["$EXCL_VAR_001/dir".into()],
+            ..Config::default()
+        };
+        c.expand_tilde("/home/user");
+        assert_eq!(c.exclude_mounts[0], "/tmp/exclude/dir");
+        std::env::remove_var("EXCL_VAR_001");
+    }
+
+    #[test]
+    fn expand_env_var_malformed_empty() {
+        // Empty ${} should not expand (leaves as-is or breaks out)
+        let mut c = Config {
+            mounts: vec![mount("${}/path", true)],
+            ..Config::default()
+        };
+        c.expand_tilde("/home/user");
+        assert_eq!(c.mounts[0].path, "${}/path");
+    }
+
+    #[test]
+    fn expand_env_var_malformed_unclosed() {
+        // Unclosed ${VAR should not expand
+        let mut c = Config {
+            mounts: vec![mount("${UNCLOSED/path", true)],
+            ..Config::default()
+        };
+        c.expand_tilde("/home/user");
+        assert_eq!(c.mounts[0].path, "${UNCLOSED/path");
+    }
+
+    #[test]
+    fn expand_env_var_invalid_name() {
+        // Invalid characters in var name should not expand
+        let mut c = Config {
+            mounts: vec![mount("${INVALID-NAME}/path", true)],
+            ..Config::default()
+        };
+        c.expand_tilde("/home/user");
+        assert_eq!(c.mounts[0].path, "${INVALID-NAME}/path");
+    }
+
+    #[test]
+    fn expand_env_var_no_recursive_in_value() {
+        // Values containing $VAR should NOT be expanded (no recursive expansion)
+        std::env::set_var("OUTER", "$INNER/path");
+        std::env::set_var("INNER", "/should/not/expand");
+        let mut c = Config {
+            mounts: vec![mount("$OUTER/file", true)],
+            ..Config::default()
+        };
+        c.expand_tilde("/home/user");
+        // OUTER is expanded literally - the $INNER in its value is NOT expanded again
+        assert_eq!(c.mounts[0].path, "$INNER/path/file");
+        std::env::remove_var("OUTER");
+        std::env::remove_var("INNER");
+    }
+
+    #[test]
+    fn expand_env_values_in_config() {
+        std::env::set_var("MY_HOME", "/custom/home");
+        let mut c = Config {
+            env: [("PATH_PREFIX".into(), "$MY_HOME/bin".into())].into(),
+            ..Config::default()
+        };
+        c.expand_tilde("/home/user");
+        assert_eq!(c.env.get("PATH_PREFIX").unwrap(), "/custom/home/bin");
+        std::env::remove_var("MY_HOME");
     }
 }
